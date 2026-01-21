@@ -2,54 +2,30 @@ const fs = require("fs");
 const path = require("path");
 const { normalizeTitle } = require("../utils/normalize");
 
+// Load the simplified TESDA qualifications dictionary
 const rawDict = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "../dictionaries/tesda_unified_job_qualifications.json"))
+  fs.readFileSync(path.join(__dirname, "../dictionaries/tesda_simplified.json"))
 );
 
-const normalizedDict = {};
+// Create a mapping from normalized job titles to qualifications
+const jobTitleToQualification = {};
 
 function buildDictionary() {
-  for (const category in rawDict) {
-    const familyList = rawDict[category];
+  // Process each qualification in the simplified dictionary
+  for (const qualification of rawDict.qualifications) {
+    // Process each job title associated with this qualification
+    for (const jobTitle of qualification.job_titles || []) {
+      const normalizedTitle = normalizeTitle(jobTitle);
 
-    for (const family in familyList) {
-      const role = familyList[family];
-
-      normalizedDict[normalizeTitle(family)] = {
-        category,
-        family,
-        role,
-        type: "role",
+      // Store the qualification info for this job title
+      jobTitleToQualification[normalizedTitle] = {
+        sector: qualification.sector,
+        title: qualification.title,
+        qual_code: qualification.qual_code,
+        level: qualification.level,
+        competency_codes: qualification.competency_codes,
+        job_title: jobTitle
       };
-
-      (role.alternate_titles || []).forEach((alt) => {
-        normalizedDict[normalizeTitle(alt)] = {
-          category,
-          family,
-          role,
-          type: "role",
-        };
-      });
-
-      (role.specialized_titles || []).forEach((spec) => {
-        normalizedDict[normalizeTitle(spec.title)] = {
-          category,
-          family,
-          role,
-          specialized: spec,
-          type: "specialized",
-        };
-
-        (spec.alternate_titles || []).forEach((alt) => {
-          normalizedDict[normalizeTitle(alt)] = {
-            category,
-            family,
-            role,
-            specialized: spec,
-            type: "specialized",
-          };
-        });
-      });
     }
   }
 }
@@ -59,50 +35,72 @@ buildDictionary();
 function getQualifications(title) {
   const normalized = normalizeTitle(title);
 
-  if (normalizedDict[normalized]) {
-    const entry = normalizedDict[normalized];
-    let quals = entry.specialized
-      ? entry.specialized.qualifications
-      : entry.role.qualifications;
-
-    if ((!quals || quals.length === 0) && entry.role && entry.role.specialized_titles) {
-      for (const spec of entry.role.specialized_titles) {
-        if (normalizeTitle(spec.title) === normalized ||
-            (spec.alternate_titles && spec.alternate_titles.some(alt => normalizeTitle(alt) === normalized))) {
-          return {
-            category: entry.category,
-            qualifications: spec.qualifications,
-            originalJobTitle: title,
-            mappedJobTitle: spec.title,
-            sector: entry.category
-          };
-        }
-      }
-
-      if (!entry.specialized) { 
-        const allQuals = new Set();
-        for (const spec of entry.role.specialized_titles) {
-          spec.qualifications.forEach(q => allQuals.add(q));
-        }
-        quals = Array.from(allQuals);
-      }
-    }
-
+  // First, try exact match
+  if (jobTitleToQualification[normalized]) {
+    const qualification = jobTitleToQualification[normalized];
     return {
-      category: entry.category,
-      qualifications: quals,
+      category: qualification.sector,
+      qualifications: qualification.competency_codes || [],
       originalJobTitle: title,
-      mappedJobTitle: entry.type === "specialized" ? entry.specialized.title : entry.family,
-      sector: entry.category
+      mappedJobTitle: qualification.job_title,
+      sector: qualification.sector,
+      qual_code: qualification.qual_code,
+      level: qualification.level
     };
   }
 
+  // If no exact match, try to find similar titles using partial matching
+  const matchedQualification = findSimilarQualification(normalized);
+
+  if (matchedQualification) {
+    return {
+      category: matchedQualification.sector,
+      qualifications: matchedQualification.competency_codes || [],
+      originalJobTitle: title,
+      mappedJobTitle: matchedQualification.job_title,
+      sector: matchedQualification.sector,
+      qual_code: matchedQualification.qual_code,
+      level: matchedQualification.level
+    };
+  }
+
+  // If no match found, return empty qualifications
   return {
     originalJobTitle: title,
     mappedJobTitle: title,
     sector: "Unknown",
-    qualifications: []
+    qualifications: [],
+    qual_code: null,
+    level: null
   };
+}
+
+// Helper function to find similar job titles using partial matching
+function findSimilarQualification(normalizedTitle) {
+  // Look for job titles that contain the search term as a substring
+  for (const [storedTitle, qualification] of Object.entries(jobTitleToQualification)) {
+    if (storedTitle.includes(normalizedTitle) || normalizedTitle.includes(storedTitle)) {
+      return qualification;
+    }
+  }
+
+  // If no substring match, try to find titles with common keywords
+  const titleWords = normalizedTitle.split(/\s+/);
+
+  for (const [storedTitle, qualification] of Object.entries(jobTitleToQualification)) {
+    const storedWords = storedTitle.split(/\s+/);
+
+    // Count common words between the search title and stored title
+    const commonWords = titleWords.filter(word => storedWords.includes(word)).length;
+
+    // If at least half of the words in the shorter phrase match, consider it a match
+    const minWords = Math.min(titleWords.length, storedWords.length);
+    if (minWords > 0 && commonWords >= Math.ceil(minWords / 2)) {
+      return qualification;
+    }
+  }
+
+  return null;
 }
 
 module.exports = { getQualifications };

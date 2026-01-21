@@ -1,5 +1,5 @@
 // test-qualification-matching.js
-const { findQualifications } = require('./services/qualificationService');
+const { getQualifications } = require('./services/qualificationService');
 
 const testCases = [
   "JUNIOR QUANTITY SURVEYOR",
@@ -16,10 +16,9 @@ const testCases = [
 
 console.log("Testing qualification matching:");
 testCases.forEach(title => {
-  const result = findQualifications(title);
+  const result = getQualifications(title);
   console.log(`\nOriginal: "${title}"`);
   console.log(`Mapped to: "${result.mappedJobTitle}"`);
   console.log(`Sector: "${result.sector}"`);
   console.log(`Qualifications: ${result.qualifications.length > 0 ? result.qualifications.join(', ') : 'None'}`);
-  console.log(`Confidence: ${result.confidence}`);
 });
