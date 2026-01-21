@@ -1,17 +1,19 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
+const { getQualifications } = require('./qualificationService');
 
 function parseLocation(location) {
-    let city = "N/A", province = "N/A";
+    let city = "N/A", province = "N/A", country = "N/A";
     if (location) {
         const parts = location.split(",").map(p => p.trim());
-        if (parts.length >= 2) { city = parts[0]; province = parts[1]; }
-        else if (parts.length === 1) { city = parts[0]; }
+        city = parts[0] || "N/A";
+        province = parts[1] || "N/A";
+        country = parts[2] || "N/A";
     }
-    return { city, province};
+    return { city, province, country};
 }
 
-function extractQualificationsFromDescription(description) {
+function extractFullDescription(description) {
     let cleanDescription = description.replace(/<!\[CDATA\[|\]\]>/g, "");
 
     const $ = cheerio.load(cleanDescription, {
@@ -33,51 +35,27 @@ function extractQualificationsFromDescription(description) {
         .replace(/\s+/g, ' ')
         .trim();
 
-    const jobDescMatch = fullText.match(/(Job Description:?\s*)([\s\S]*?)(?=Qualification[s]?|Additional Information:|Last Job Ad Activity:|Agency Details|Is this ad misleading|$)/i);
+    fullText = fullText.replace(/^(Job Description|Job Desc|Description):\s*/i, '');
 
-    const qualificationMatch = fullText.match(/(Qualification[s]?:?\s*)([\s\S]*?)(?=Additional Information:|Last Job Ad Activity:|Agency Details|Is this ad misleading|$)/i);
-
-    let extractedQualifications = "Not specified";
-    let cleanJobDescription = "";
-
-    if (qualificationMatch && qualificationMatch[2]) {
-        extractedQualifications = qualificationMatch[2].trim();
-    }
-
-    if (jobDescMatch && jobDescMatch[2]) {
-        cleanJobDescription = jobDescMatch[2].trim();
-    } else {
-        if (qualificationMatch) {
-            const qualStartIndex = fullText.search(/Qualification[s]?/i);
-            if (qualStartIndex !== -1) {
-                cleanJobDescription = fullText.substring(0, qualStartIndex).trim();
-            } else {
-                cleanJobDescription = fullText;
-            }
-        } else {
-            cleanJobDescription = fullText;
-        }
-    }
-
-    cleanJobDescription = cleanJobDescription
-        .replace(/Job Description:\s*/i, '')
-        .replace(/Qualification[s]?:?\s*/i, '')
-        .replace(/\s+/g, ' ')
-        .trim();
-
-    if (extractedQualifications === "Not specified" || extractedQualifications.length < 5) {
-        extractedQualifications = cleanJobDescription;
-        cleanJobDescription = "Not specified";
-    }
+    fullText = fullText.replace(/DMW License No:\s*DMW-\d+-[A-Z]+-\d+-[A-Z]+\s+Accreditation No:\s*\d+/gi, '')
+                       .replace(/DMW License No:.*?Accreditation No:\s*\d+/gi, '')
+                       .replace(/<dmw_number>.*?<\/dmw_number>/gi, '')
+                       .replace(/<accre_number>.*?<\/accre_number>/gi, '')
+                       .replace(/Job Description:\s*/gi, '')
+                       .replace(/\s+/g, ' ')
+                       .trim();
 
     return {
-        cleanDescription: cleanJobDescription,
-        extractedQualifications: extractedQualifications
+        cleanDescription: fullText
     };
 }
 
 async function scrapeJob(job) {
     const { id, title, company, description, url, location, listed_date, closing_date } = job;
+
+    const qualificationData = getQualifications(title);
+    const qualificationCodes = qualificationData ? qualificationData.qualifications : [];
+
 
     const formatDate = (dateStr) => {
         if (!dateStr) return dateStr;
@@ -98,19 +76,20 @@ async function scrapeJob(job) {
         const { data } = await axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
         const $ = cheerio.load(data);
 
-        let minSalary = "TBD", maxSalary = "TBD";
+        let minSalary = "TBD", maxSalary = "TBD"; currency = "N/A";
 
         $('.text-money').first().each((i, elem) => {
             const text = $(elem).text().trim();
+            
 
             if (!text.toLowerCase().includes("no salary information is indicated for this ad.")) {
                 const salaryPattern = /([A-Z]{3})\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?)(?:\s*[-–—]\s*(\d{1,3}(?:,\d{3})*(?:\.\d{2})?))?/i;
                 const match = text.match(salaryPattern);
 
                 if (match) {
-                    const currency = match[1].toUpperCase();
-                    minSalary = `${currency} ${parseFloat(match[2].replace(/,/g, "")).toLocaleString()}`;
-                    maxSalary = match[3] ? `${currency} ${parseFloat(match[3].replace(/,/g, "")).toLocaleString()}` : minSalary;
+                    currency = match[1].toUpperCase();
+                    minSalary = parseFloat(match[2].replace(/,/g, "")).toLocaleString();
+                    maxSalary = match[3] ? parseFloat(match[3].replace(/,/g, "")).toLocaleString() : minSalary;
                 }
             }
         });
@@ -126,52 +105,56 @@ async function scrapeJob(job) {
 
         if (!logo) logo = "N/A";
 
-        const { city, province } = parseLocation(location);
+        const { city, province, country } = parseLocation(location);
 
-        const { cleanDescription, extractedQualifications } = extractQualificationsFromDescription(description);
+        const { cleanDescription } = extractFullDescription(description);
 
         return {
-            "Source ID": id,
             "Job Title": title,
             "Company Name": company,
             Description: cleanDescription,
             "Employment Type": "Full-time",
             Source: "WorkAbroad.ph",
+            "Currency": currency,
             "Minimum Salary": typeof minSalary === 'string' && minSalary !== "TBD" ?
                 minSalary.replace(/(\d+(?:\.\d+)?)/, (num) => parseFloat(num).toLocaleString()) : minSalary,
             "Maximum Salary": typeof maxSalary === 'string' && maxSalary !== "TBD" ?
                 maxSalary.replace(/(\d+(?:\.\d+)?)/, (num) => parseFloat(num).toLocaleString()) : maxSalary,
             City: city,
             Province: province,
+            Country: country,
             "Application URL": url,
             "Remote Work": "On-site",
-            Qualifications: extractedQualifications,
             "Company Logo": logo,
             "Date Posted": formattedListedDate,
-            "Closing Date": formattedClosingDate
+            "Closing Date": formattedClosingDate,
+            "Qualification": qualificationCodes.join(", "),
+            "Source ID": id
         };
     } catch (error) {
         console.error(`Error scraping ${url}:`, error.message);
 
-        const { cleanDescription, extractedQualifications } = extractQualificationsFromDescription(description);
+        const { cleanDescription } = extractFullDescription(description);
 
         return {
-            "Source ID": id,
             "Job Title": title,
             "Company Name": company,
             Description: cleanDescription,
             "Employment Type": "Full-time",
             Source: "WorkAbroad.ph",
+            "Currency": "N/A",
             "Minimum Salary": "TBD",
             "Maximum Salary": "TBD",
             City: "N/A",
             Province: "N/A",
+            Country: "N/A",
             "Application URL": url,
             "Remote Work": "On-site",
-            Qualifications: extractedQualifications,
             "Company Logo": "N/A",
             "Date Posted": formattedListedDate,
-            "Closing Date": formattedClosingDate
+            "Closing Date": formattedClosingDate,
+            "Qualification": qualificationCodes.join(", "),
+            "Source ID": id
         };
     }
 }

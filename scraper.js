@@ -26,9 +26,9 @@ async function main() {
     const remainingJobs = jobs.filter(job => !scrapedIdSet.has(job.id));
     console.log(`Jobs remaining to scrape: ${remainingJobs.length}`);
 
-    const concurrencyLimit = 3; 
-    const batchSize = 10; 
-    const batch = [];
+    const concurrencyLimit = 3;
+    const batchSize = 10;
+    const allScrapedJobs = []; // Store all scraped jobs
 
     for (let i = 0; i < remainingJobs.length; i += concurrencyLimit) {
         const jobChunk = remainingJobs.slice(i, i + concurrencyLimit);
@@ -39,9 +39,7 @@ async function main() {
             try {
                 const scrapedJob = await scrapeJob(job);
 
-                batch.push(scrapedJob);
                 console.log(`Saved: ${job.title}`);
-
                 return scrapedJob;
             } catch (error) {
                 console.error(`Error scraping job ${job.title}:`, error.message);
@@ -49,10 +47,15 @@ async function main() {
             }
         });
 
-        await Promise.all(promises);
+        const results = await Promise.all(promises);
 
-        while (batch.length >= batchSize) {
-            const batchToExport = batch.splice(0, batchSize); 
+        // Filter out null results and add to allScrapedJobs
+        const successfulResults = results.filter(result => result !== null);
+        allScrapedJobs.push(...successfulResults);
+
+        // Export in batches of batchSize
+        while (allScrapedJobs.length >= batchSize) {
+            const batchToExport = allScrapedJobs.splice(0, batchSize);
             exportToExcel(batchToExport, "workabroad_jobs.xlsx");
             console.log(`Exported batch of ${batchToExport.length} jobs`);
         }
@@ -62,9 +65,10 @@ async function main() {
         }
     }
 
-    if (batch.length > 0) {
-        exportToExcel(batch, "workabroad_jobs.xlsx");
-        console.log(`Exported final batch of ${batch.length} jobs`);
+    // Export any remaining jobs
+    if (allScrapedJobs.length > 0) {
+        exportToExcel(allScrapedJobs, "workabroad_jobs.xlsx");
+        console.log(`Exported final batch of ${allScrapedJobs.length} jobs`);
     }
 
     flushCache();
