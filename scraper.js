@@ -49,11 +49,9 @@ async function main() {
 
         const results = await Promise.all(promises);
 
-        // Filter out null results and add to allScrapedJobs
         const successfulResults = results.filter(result => result !== null);
         allScrapedJobs.push(...successfulResults);
 
-        // Export in batches of batchSize
         while (allScrapedJobs.length >= batchSize) {
             const batchToExport = allScrapedJobs.splice(0, batchSize);
             exportToExcel(batchToExport, "workabroad_jobs.xlsx");
@@ -65,7 +63,6 @@ async function main() {
         }
     }
 
-    // Export any remaining jobs
     if (allScrapedJobs.length > 0) {
         exportToExcel(allScrapedJobs, "workabroad_jobs.xlsx");
         console.log(`Exported final batch of ${allScrapedJobs.length} jobs`);
