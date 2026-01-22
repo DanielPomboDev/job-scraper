@@ -76,7 +76,7 @@ async function scrapeJob(job) {
         const { data } = await axios.get(url, { headers: { "User-Agent": "Mozilla/5.0" } });
         const $ = cheerio.load(data);
 
-        let minSalary = "TBD", maxSalary = "TBD"; currency = "N/A";
+        let minSalary = "TBD", maxSalary = "TBD", currency = "N/A";
 
         $('.text-money').first().each((i, elem) => {
             const text = $(elem).text().trim();

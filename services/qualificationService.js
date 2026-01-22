@@ -11,11 +11,21 @@ const jobTitleToQualification = {};
 function buildDictionary() {
   for (const [category, jobs] of Object.entries(rawDict)) {
     for (const [jobName, jobData] of Object.entries(jobs)) {
+      let allQualifications = [...(jobData.qualifications || [])];
+
+      if (jobData.specialized_titles) {
+        for (const spec of jobData.specialized_titles) {
+          if (spec.qualifications) {
+            allQualifications = [...new Set([...allQualifications, ...spec.qualifications])]; // Combine and deduplicate
+          }
+        }
+      }
+
       const normalizedMainTitle = normalizeTitle(jobName);
       jobTitleToQualification[normalizedMainTitle] = {
         category: category,
         title: jobData.description || jobName,
-        qual_codes: jobData.qualifications || [],
+        qual_codes: allQualifications,
         job_title: jobName,
         keywords: jobData.keywords || [],
         type: "main"
@@ -27,7 +37,7 @@ function buildDictionary() {
           jobTitleToQualification[normalizedAltTitle] = {
             category: category,
             title: jobData.description || jobName,
-            qual_codes: jobData.qualifications || [],
+            qual_codes: allQualifications,
             job_title: altTitle,
             keywords: jobData.keywords || [],
             type: "alternate"
@@ -68,53 +78,110 @@ function buildDictionary() {
 
 buildDictionary();
 
-function getQualifications(title) {
-  const normalized = normalizeTitle(title);
+function fuzzyMatch(query, candidates, threshold = 0.3) {
+  const normalizedQuery = normalizeTitle(query).toLowerCase();
+  const queryWords = normalizedQuery.split(/\s+/);
 
-  const genericTerms = ['mechanic', 'technician', 'operator', 'worker', 'assistant', 'aide', 'supervisor'];
-  if (genericTerms.includes(normalized)) {
-    const potentialMatches = [];
-    for (const [storedTitle, qualification] of Object.entries(jobTitleToQualification)) {
-      if (storedTitle.includes(normalized) && storedTitle !== normalized) {
-        const wordCount = storedTitle.split(/\s+/).length;
+  const potentialMatches = [];
 
-        let sectorScore = 0;
-        if (normalized === 'mechanic') {
-          if (qualification.category.includes('Automotive')) {
-            sectorScore = 2; 
-          } else if (qualification.category.includes('Agriculture')) {
-            sectorScore = -1; 
-          }
-        } else if (normalized === 'technician' &&
-                  (qualification.category.includes('Electronics') || qualification.category.includes('Electrical'))) {
-          sectorScore = 1.5; 
+  for (const [title, qualification] of Object.entries(candidates)) {
+    const normalizedTitle = title.toLowerCase();
+    const titleWords = normalizedTitle.split(/\s+/);
+
+    let wordOverlap = 0;
+    let exactWordMatches = 0; 
+
+    for (const queryWord of queryWords) {
+      if (normalizedTitle.includes(queryWord)) {
+        wordOverlap++;
+        if (titleWords.includes(queryWord)) {
+          exactWordMatches++;
         }
-
-        potentialMatches.push({
-          qualification,
-          specificity: wordCount + sectorScore, 
-          storedTitle
-        });
       }
     }
 
-    if (potentialMatches.length > 0) {
-      potentialMatches.sort((a, b) => b.specificity - a.specificity);
-      const bestMatch = potentialMatches[0];
-      return {
-        category: bestMatch.qualification.category,
-        qualifications: bestMatch.qualification.qual_codes || [],
-        originalJobTitle: title,
-        mappedJobTitle: bestMatch.qualification.job_title,
-        sector: bestMatch.qualification.category,
-        qual_code: bestMatch.qualification.qual_codes && bestMatch.qualification.qual_codes.length > 0 ? bestMatch.qualification.qual_codes[0] : null,
-        level: bestMatch.qualification.type
-      };
+    const overlapRatio = wordOverlap / queryWords.length;
+    const exactMatchRatio = exactWordMatches / queryWords.length;
+
+    let keywordMatch = 0;
+    if (qualification.keywords) {
+      for (const keyword of qualification.keywords) {
+        if (query.toLowerCase().includes(keyword.toLowerCase())) {
+          keywordMatch += 0.5; 
+        }
+      }
+    }
+
+    const hasQualifications = qualification.qual_codes && qualification.qual_codes.length > 0 ? 0.3 : 0;
+
+    let weldingBoost = 0;
+    const isQueryWeldingRelated = query.toLowerCase().includes('weld');
+    const isTitleWeldingRelated = normalizedTitle.includes('weld');
+
+    if (isQueryWeldingRelated && isTitleWeldingRelated) {
+      weldingBoost = 0.4; 
+    }
+
+    const score = (overlapRatio * 0.5) + (exactMatchRatio * 0.5) + keywordMatch + hasQualifications + weldingBoost;
+
+    if (score >= threshold) {
+      potentialMatches.push({ qualification, score, title });
     }
   }
 
+  potentialMatches.sort((a, b) => b.score - a.score);
+
+  return potentialMatches.length > 0 ? potentialMatches[0] : null;
+}
+
+function getQualifications(title) {
+  const normalized = normalizeTitle(title);
+
   if (jobTitleToQualification[normalized]) {
     const qualification = jobTitleToQualification[normalized];
+
+    if (qualification.qual_codes && qualification.qual_codes.length > 0) {
+      return {
+        category: qualification.category,
+        qualifications: qualification.qual_codes || [],
+        originalJobTitle: title,
+        mappedJobTitle: qualification.job_title,
+        sector: qualification.category,
+        qual_code: qualification.qual_codes && qualification.qual_codes.length > 0 ? qualification.qual_codes[0] : null,
+        level: qualification.type
+      };
+    } else {
+      const fuzzyResult = fuzzyMatch(title, jobTitleToQualification, 0.6); // Higher threshold
+
+      if (fuzzyResult) {
+        const { qualification } = fuzzyResult;
+        return {
+          category: qualification.category,
+          qualifications: qualification.qual_codes || [],
+          originalJobTitle: title,
+          mappedJobTitle: qualification.job_title,
+          sector: qualification.category,
+          qual_code: qualification.qual_codes && qualification.qual_codes.length > 0 ? qualification.qual_codes[0] : null,
+          level: qualification.type
+        };
+      } else {
+        return {
+          category: qualification.category,
+          qualifications: qualification.qual_codes || [],
+          originalJobTitle: title,
+          mappedJobTitle: qualification.job_title,
+          sector: qualification.category,
+          qual_code: qualification.qual_codes && qualification.qual_codes.length > 0 ? qualification.qual_codes[0] : null,
+          level: qualification.type
+        };
+      }
+    }
+  }
+
+  const fuzzyResult = fuzzyMatch(title, jobTitleToQualification, 0.7); // Even higher threshold for general matching
+
+  if (fuzzyResult) {
+    const { qualification } = fuzzyResult;
     return {
       category: qualification.category,
       qualifications: qualification.qual_codes || [],
@@ -126,30 +193,6 @@ function getQualifications(title) {
     };
   }
 
-  const matchedQualification = findSimilarQualification(normalized, title);
-
-  if (matchedQualification) {
-
-    const originalWords = normalized.split(/\s+/);
-    const matchedWords = normalizeTitle(matchedQualification.job_title).split(/\s+/);
-
-    const matchingWords = originalWords.filter(word => matchedWords.includes(word));
-    const wordMatchRatio = matchingWords.length / originalWords.length;
-
-    if (wordMatchRatio >= 0.3 || (matchedQualification.keywords && matchedQualification.keywords.some(kw =>
-        title.toLowerCase().includes(kw.toLowerCase())))) {
-      return {
-        category: matchedQualification.category,
-        qualifications: matchedQualification.qual_codes || [],
-        originalJobTitle: title,
-        mappedJobTitle: matchedQualification.job_title,
-        sector: matchedQualification.category,
-        qual_code: matchedQualification.qual_codes && matchedQualification.qual_codes.length > 0 ? matchedQualification.qual_codes[0] : null,
-        level: matchedQualification.type
-      };
-    }
-  }
-
   return {
     originalJobTitle: title,
     mappedJobTitle: title,
@@ -158,113 +201,6 @@ function getQualifications(title) {
     qual_code: null,
     level: null
   };
-}
-
-function findSimilarQualification(normalizedTitle, originalTitle) {
-  const genericTerms = ['supervisor', 'worker', 'technician', 'operator', 'assistant', 'aide', 'care', 'service', 'specialist'];
-
-  const searchWords = normalizedTitle.split(/\s+/);
-
-  const potentialMatches = [];
-
-  for (const [storedTitle, qualification] of Object.entries(jobTitleToQualification)) {
-    if (genericTerms.some(term => storedTitle.includes(term))) {
-      continue;
-    }
-
-    const storedWords = storedTitle.split(/\s+/);
-
-    const matchingWords = searchWords.filter(word => storedWords.includes(word));
-    const matchScore = matchingWords.length / Math.max(searchWords.length, storedWords.length);
-
-    const isSubstringMatch = storedTitle.includes(normalizedTitle) || normalizedTitle.includes(storedTitle);
-
-    let keywordRelevance = 0;
-    const originalLower = originalTitle.toLowerCase();
-
-    if (qualification.keywords) {
-      for (const keyword of qualification.keywords) {
-        if (originalLower.includes(keyword.toLowerCase())) {
-          keywordRelevance += 1;
-        }
-      }
-    }
-
-    let semanticRelevance = 0;
-    const originalUpper = originalTitle.toUpperCase();
-
-    const hrTerms = ['HUMAN RESOURCES', 'HR', 'EXECUTIVE', 'MANAGER', 'ADMINISTRATOR', 'SUPERVISOR', 'OFFICER'];
-    const isHrRole = hrTerms.some(term => originalUpper.includes(term));
-
-    const hrKeywords = ['human resources', 'hr', 'manager', 'admin', 'office', 'supervisor', 'officer'];
-    const hrKeywordsInTitle = ['human resources', 'hr', 'manager', 'admin', 'office', 'supervisor', 'officer'];
-
-    const hasExecutiveInHrContext = qualification.job_title.toLowerCase().includes('executive') &&
-                                   (qualification.job_title.toLowerCase().includes('human resources') ||
-                                    qualification.job_title.toLowerCase().includes('hr') ||
-                                    qualification.job_title.toLowerCase().includes('business') ||
-                                    qualification.job_title.toLowerCase().includes('corporate'));
-
-    const isHrQualification = hrKeywordsInTitle.some(kw => qualification.job_title.toLowerCase().includes(kw)) ||
-                             (qualification.keywords && qualification.keywords.some(k =>
-                                hrKeywords.includes(k.toLowerCase()))) ||
-                             hasExecutiveInHrContext;
-
-    if (isHrRole && isHrQualification) {
-      semanticRelevance += 2; 
-    }
-    else if (!isHrRole && !isHrQualification) {
-      semanticRelevance += 1;
-    }
-
-    if (isHrRole && !isHrQualification) {
-      semanticRelevance -= 3; 
-    }
-    else if (!isHrRole && isHrQualification) {
-      semanticRelevance -= 2; 
-    }
-
-    if (matchScore > 0 || isSubstringMatch) {
-      potentialMatches.push({
-        qualification,
-        matchScore,
-        isSubstringMatch,
-        matchingWordsCount: matchingWords.length,
-        keywordRelevance,
-        semanticRelevance
-      });
-    }
-  }
-
-  potentialMatches.sort((a, b) => {
-    if (b.semanticRelevance !== a.semanticRelevance) {
-      return b.semanticRelevance - a.semanticRelevance;
-    }
-
-    if (b.keywordRelevance !== a.keywordRelevance) {
-      return b.keywordRelevance - a.keywordRelevance;
-    }
-
-    if (a.isSubstringMatch && !b.isSubstringMatch) return -1;
-    if (!a.isSubstringMatch && b.isSubstringMatch) return 1;
-
-    if (b.matchingWordsCount !== a.matchingWordsCount) {
-      return b.matchingWordsCount - a.matchingWordsCount;
-    }
-
-    return b.matchScore - a.matchScore;
-  });
-
-  if (potentialMatches.length > 0) {
-    const bestMatch = potentialMatches[0];
-
-    if ((bestMatch.matchingWordsCount > 0 || bestMatch.isSubstringMatch || bestMatch.keywordRelevance > 0)
-        && bestMatch.semanticRelevance >= -1) {
-      return bestMatch.qualification;
-    }
-  }
-
-  return null;
 }
 
 module.exports = { getQualifications };
